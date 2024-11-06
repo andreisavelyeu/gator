@@ -6,6 +6,7 @@ import (
 	cli "gator/internal/cli"
 	internal "gator/internal/config"
 	database "gator/internal/database"
+	middleware "gator/internal/middleware"
 	state "gator/internal/state"
 	"os"
 
@@ -30,6 +31,12 @@ func main() {
 	commands.Register("register", cli.HandlerRegister)
 	commands.Register("reset", cli.HandlerReset)
 	commands.Register("users", cli.HandlerGetUsers)
+	commands.Register("agg", cli.HandlerAgg)
+	commands.Register("addfeed", middleware.LoggedInUserMiddleware(cli.HandlerAddFeed))
+	commands.Register("feeds", cli.HandlerGetFeeds)
+	commands.Register("follow", middleware.LoggedInUserMiddleware(cli.HandlerFollow))
+	commands.Register("following", middleware.LoggedInUserMiddleware(cli.HandlerFollowing))
+	commands.Register("unfollow", middleware.LoggedInUserMiddleware(cli.HandlerUnfollow))
 
 	args := os.Args[1:]
 

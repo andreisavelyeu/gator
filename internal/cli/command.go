@@ -2,10 +2,14 @@ package cli
 
 import (
 	"context"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"gator/internal/database"
 	"gator/internal/state"
+	"html"
+	"io"
+	"net/http"
 	"time"
 
 	"github.com/google/uuid"
@@ -114,4 +118,195 @@ func HandlerGetUsers(s *state.State, cmd Command) error {
 
 	return nil
 
+}
+
+type RSSFeed struct {
+	Channel struct {
+		Title       string    `xml:"title"`
+		Link        string    `xml:"link"`
+		Description string    `xml:"description"`
+		Item        []RSSItem `xml:"item"`
+	} `xml:"channel"`
+}
+
+type RSSItem struct {
+	Title       string `xml:"title"`
+	Link        string `xml:"link"`
+	Description string `xml:"description"`
+	PubDate     string `xml:"pubDate"`
+}
+
+func fetchFeed(ctx context.Context, feedURL string) (*RSSFeed, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", feedURL, nil)
+
+	if err != nil {
+		return &RSSFeed{}, err
+	}
+
+	req.Header.Add("User-Agent", "gator")
+
+	client := http.Client{}
+	res, err := client.Do(req)
+
+	if err != nil {
+		return &RSSFeed{}, err
+	}
+
+	body, err := io.ReadAll(res.Body)
+
+	defer res.Body.Close()
+
+	if err != nil {
+		return &RSSFeed{}, err
+	}
+
+	var feed *RSSFeed
+
+	err = xml.Unmarshal(body, &feed)
+
+	if err != nil {
+		return &RSSFeed{}, err
+	}
+
+	feed.Channel.Title = html.UnescapeString(feed.Channel.Title)
+	feed.Channel.Description = html.UnescapeString(feed.Channel.Description)
+
+	for k := range feed.Channel.Item {
+		feed.Channel.Item[k].Title = html.UnescapeString(feed.Channel.Item[k].Title)
+		feed.Channel.Item[k].Description = html.UnescapeString(feed.Channel.Item[k].Description)
+	}
+	return feed, nil
+}
+
+func HandlerAgg(s *state.State, cmd Command) error {
+	const url = "https://www.wagslane.dev/index.xml"
+
+	feed, err := fetchFeed(context.Background(), url)
+
+	if err != nil {
+		return err
+	}
+
+	fmt.Println(feed)
+	return nil
+}
+
+func HandlerAddFeed(s *state.State, cmd Command, user database.User) error {
+	if len(cmd.Args) < 2 {
+		return errors.New("not enough arguments")
+	}
+
+	url := cmd.Args[1]
+	name := cmd.Args[0]
+
+	newFeed := database.CreateFeedParams{
+		Name:      name,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		ID:        uuid.New(),
+		UserID:    user.ID,
+		Url:       url,
+	}
+
+	feed, err := s.Db.CreateFeed(context.Background(), newFeed)
+
+	if err != nil {
+		return err
+	}
+
+	feedFollow := database.CreateFeedFollowParams{
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		ID:        uuid.New(),
+		UserID:    user.ID,
+		FeedID:    feed.ID,
+	}
+
+	newRecord, err := s.Db.CreateFeedFollow(context.Background(), feedFollow)
+
+	if err != nil {
+		return err
+	}
+
+	fmt.Println(newRecord)
+	fmt.Println(feed)
+	return nil
+}
+
+func HandlerGetFeeds(s *state.State, cmd Command) error {
+	allFeeds, err := s.Db.GetFeeds(context.Background())
+	if err != nil {
+		return err
+	}
+
+	for k, v := range allFeeds {
+		fmt.Printf("Feed %v\n", k)
+		fmt.Printf("Name: %s\n", v.Name)
+		fmt.Printf("Url: %s\n", v.Url)
+		fmt.Printf("Created by: %s\n", v.UserName)
+	}
+	return nil
+}
+
+func HandlerFollow(s *state.State, cmd Command, user database.User) error {
+	if len(cmd.Args) == 0 {
+		return errors.New("not enough arguments")
+	}
+
+	url := cmd.Args[0]
+
+	feed, err := s.Db.GetFeed(context.Background(), url)
+
+	if err != nil {
+		return err
+	}
+
+	feedFollow := database.CreateFeedFollowParams{
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		ID:        uuid.New(),
+		UserID:    user.ID,
+		FeedID:    feed.ID,
+	}
+
+	newRecord, err := s.Db.CreateFeedFollow(context.Background(), feedFollow)
+
+	if err != nil {
+		return err
+	}
+
+	fmt.Println(newRecord)
+	return nil
+}
+
+func HandlerFollowing(s *state.State, cmd Command, user database.User) error {
+	feeds, err := s.Db.GetFeedFollowsForUser(context.Background(), user.ID)
+
+	if err != nil {
+		return err
+	}
+
+	for _, v := range feeds {
+		fmt.Println(v.Name)
+	}
+	return nil
+}
+
+func HandlerUnfollow(s *state.State, cmd Command, user database.User) error {
+	if len(cmd.Args) == 0 {
+		return errors.New("not enough arguments")
+	}
+
+	url := cmd.Args[0]
+
+	deleteFeedParams := database.DeleteFeedFollowByUserAndUrlParams{
+		UserID: user.ID,
+		Url:    url,
+	}
+	err := s.Db.DeleteFeedFollowByUserAndUrl(context.Background(), deleteFeedParams)
+
+	if err != nil {
+		return err
+	}
+	return nil
 }
