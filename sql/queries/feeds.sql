@@ -16,3 +16,11 @@ SELECT f.name, f.url, u.name as user_name from feeds f INNER JOIN users u ON u.i
 
 -- name: GetFeed :one
 SELECT * from feeds where url = $1;
+
+-- name: MarkFeedFetched :exec
+UPDATE feeds
+SET last_fetched_at = $1, updated_at = $1
+WHERE feeds.id = $2;
+
+-- name: GetNextFeedToFetch :one
+SELECT * FROM feeds order by last_fetched_at NULLS FIRST limit 1;

@@ -2,14 +2,17 @@ package cli
 
 import (
 	"context"
+	"database/sql"
 	"encoding/xml"
 	"errors"
 	"fmt"
 	"gator/internal/database"
 	"gator/internal/state"
+	"gator/internal/utils"
 	"html"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -179,16 +182,30 @@ func fetchFeed(ctx context.Context, feedURL string) (*RSSFeed, error) {
 }
 
 func HandlerAgg(s *state.State, cmd Command) error {
-	const url = "https://www.wagslane.dev/index.xml"
 
-	feed, err := fetchFeed(context.Background(), url)
+	if len(cmd.Args) == 0 {
+		return errors.New("not enough arguments")
+	}
+
+	timeBetweenRequests, err := time.ParseDuration(cmd.Args[0])
 
 	if err != nil {
 		return err
 	}
 
-	fmt.Println(feed)
-	return nil
+	fmt.Printf("Collecting feeds every %v\n", timeBetweenRequests)
+
+	ticker := time.NewTicker(timeBetweenRequests)
+
+	for ; ; <-ticker.C {
+		err := scrapeFeeds(s)
+
+		if err != nil {
+			return err
+		}
+
+	}
+
 }
 
 func HandlerAddFeed(s *state.State, cmd Command, user database.User) error {
@@ -308,5 +325,77 @@ func HandlerUnfollow(s *state.State, cmd Command, user database.User) error {
 	if err != nil {
 		return err
 	}
+	return nil
+}
+
+func scrapeFeeds(s *state.State) error {
+	nextFeed, err := s.Db.GetNextFeedToFetch(context.Background())
+
+	if err != nil {
+		return err
+	}
+
+	feed, err := fetchFeed(context.Background(), nextFeed.Url)
+
+	if err != nil {
+		return err
+	}
+
+	params := database.MarkFeedFetchedParams{
+		LastFetchedAt: sql.NullTime{
+			Time:  time.Now(),
+			Valid: true,
+		},
+		ID: nextFeed.ID,
+	}
+
+	err = s.Db.MarkFeedFetched(context.Background(), params)
+
+	if err != nil {
+		return err
+	}
+
+	for _, item := range feed.Channel.Item {
+		publishedAt, _ := utils.ParsePublishedAt(item.PubDate)
+		params := database.CreatePostParams{
+			ID:          uuid.New(),
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+			PublishedAt: publishedAt,
+			Url:         item.Link,
+			Title:       item.Title,
+			Description: sql.NullString{String: item.Description, Valid: true},
+			FeedID:      nextFeed.ID,
+		}
+		s.Db.CreatePost(context.Background(), params)
+	}
+
+	return nil
+}
+
+func HandleBrowse(s *state.State, cmd Command) error {
+	var limitString string
+
+	if len(cmd.Args) == 0 {
+		limitString = "2"
+	} else {
+		limitString = cmd.Args[0]
+	}
+
+	limit, err := strconv.Atoi(limitString)
+	if err != nil {
+		limit = 2
+	}
+
+	posts, err := s.Db.GetPosts(context.Background(), int32(limit))
+
+	if err != nil {
+		return err
+	}
+
+	for _, post := range posts {
+		fmt.Println(post.Title)
+	}
+
 	return nil
 }
